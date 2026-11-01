@@ -1,7 +1,5 @@
 build/
-dist/TaskbarMatch-1.1.2-beta/
-dist/TaskbarMatch-1.1.2-exe/
-dist/TaskbarMatch-1.1.2-beta4/
+dist/TaskbarMatch-*/
 dist/*.zip
 *.obj
 *.lib
