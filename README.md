@@ -1,50 +1,52 @@
-# Taskbar Match
+<img src="assets/card.png" alt="Taskbar Match, a Windows 11 utility" width="100%">
 
-Automatic taskbar color and contrast for Windows 11.
+The Windows 11 taskbar has one color, and it doesn't care what is above it. Maximize a dark editor and you get a light bar under it, or the other way round, and the screen ends in a strip that looks like it belongs to another app.
 
-Taskbar Match samples the active window edge and adjusts each Windows taskbar to keep its background, text, and icons readable. It is designed for the stock Windows 11 x64 taskbar.
+Taskbar Match makes the taskbar continue the window above it. It reads a thin strip at the edge of the maximized window, gives the taskbar that color and flips the text and icons to dark or light so they stay readable. When no window touches the taskbar, it hands the bar back to Windows. It works on every monitor and needs no administrator rights.
 
-## Current beta
+<img src="assets/how.png" alt="Taskbar Match samples a strip at the bottom of the maximized window and gives the taskbar that color" width="100%">
 
-- Windows 11 x64, build 22621 or later
-- No administrator access required
-- No screenshots, telemetry, or network access
-- Multi-monitor sampling
-- Tray controls for pause, refresh, diagnostics, startup, and restore
-- GPL-3.0-or-later
+## How it works
 
-This beta reaches private Windows taskbar XAML controls through a small native helper. It may be incompatible with other taskbar stylers or with future Windows taskbar changes. Do not run it alongside TranslucentTB, ExplorerPatcher, or StartAllBack.
+Whenever windows change, and every few moments in between, Taskbar Match looks for the maximized window that borders each taskbar and reads a strip a few pixels tall along its edge, never a screenshot of the screen. It takes the dominant color of that strip, sets it as the taskbar background through a small native helper and picks dark or light icons by contrast. It keeps the original taskbar values and puts them back when you pause or exit. If it crashes, Explorer restores them on its own.
 
-## Run the prebuilt executable
+Full-screen games and videos are left alone, and so is a hidden taskbar. Since 1.2.0 the taskbar can sit at the bottom or the top of the screen. Taskbars on the left or right edge are not supported yet; Taskbar Match leaves them unchanged.
 
-1. Download `TaskbarMatch.exe` from the release page.
-2. Double-click it.
+## Install
 
-The executable contains the native helper and extracts it into its per-user cache on first use. The ZIP is an optional bundle with the executable, source license, and checksums.
-3. Use the tray icon to pause or exit and restore the taskbar.
+1. Download `TaskbarMatch.exe` from the [latest release](../../releases).
+2. Double-click it. The tray icon shows that it runs.
 
-To start at sign-in, enable **Start with Windows** in the tray menu. This copies the executable to `%LOCALAPPDATA%\TaskbarMatch\TaskbarMatch.exe` and registers that stable path. You can then delete the download. Autostart waits up to 60 seconds for the taskbar connection and ignores duplicate launches.
+The beta is not signed yet, so Windows may warn you about an unfamiliar app the first time.
 
-## Startup troubleshooting
+To start it with Windows, enable **Start with Windows** in the tray menu. This copies the executable to `%LOCALAPPDATA%\TaskbarMatch\TaskbarMatch.exe` and starts it from there at sign-in, so you can delete the download afterwards. The tray menu also has **Pause and restore**, **Refresh now**, **Diagnostics** and **Exit and restore taskbars**.
 
-This release supports Windows 11 22H2 or later on x64 hardware. Windows 10, Windows 11 21H2, ARM64, and replacement taskbars are not supported. It uses the .NET Framework included with supported Windows 11 installations; no .NET 3.5 or Visual C++ redistributable is required.
+## Requirements
 
-If launch fails, check `%LOCALAPPDATA%\TaskbarMatch\runtime.log` and the error dialog. Report the Windows build, CPU architecture, and complete error text. Run `TaskbarMatch.exe --selftest` from a terminal to check platform compatibility, sampling logic, embedded helper integrity, and native loading without modifying the taskbar. This does not test the Explorer XAML connection.
+- Windows 11 22H2 (build 22621) or later on x64
+- The stock Windows 11 taskbar
 
-Beta 4 corrects the executable compatibility manifest, catches UI initialization errors, restores damaged helper caches, and fixes duplicate autostart shutdowns. Stop the previous version using its tray menu before opening the new executable.
+Windows 10, Windows 11 21H2, ARM64 and replacement taskbars are not supported. Do not run it together with TranslucentTB, ExplorerPatcher or StartAllBack, because they change the same taskbar controls.
 
-The beta binaries are not yet Authenticode-signed, so Windows may show an unfamiliar-app warning on first launch.
+## Troubleshooting
 
-To remove it, exit Taskbar Match, disable `Start with Windows` in the tray menu, and delete `%LOCALAPPDATA%\TaskbarMatch` plus the extracted package folder. A helper DLL loaded by Explorer may remain locked until the next sign-out.
+If it does not start, look at `%LOCALAPPDATA%\TaskbarMatch\runtime.log`. Run `TaskbarMatch.exe --selftest` in a terminal to check the platform, the sampling logic and the native helper without touching the taskbar. When you open an issue, add your Windows build, your CPU architecture and the complete error text.
 
-## Source and build
+To remove it, exit Taskbar Match, disable **Start with Windows** and delete `%LOCALAPPDATA%\TaskbarMatch`. Explorer can keep the helper DLL locked until you sign out.
 
-`TaskbarMatch-1.1.2.cmd` is the complete single-file source distribution. The readable source is also available under `src/`, with the native build recipe in `build_native.py`.
+## Build it yourself
 
-The release executable was built from the embedded C# and native sources. The native helper hash is recorded in the launcher and verified before loading.
+The source is in `src/`: the C# app in `TaskbarMatch.cs` and the native helper in `TaskbarMatch.Xaml.c`.
 
-Build the native helper with `python build_native.py` (requires clang and lld-link), then build and package the Windows executable with `powershell -ExecutionPolicy Bypass -File build.ps1`. The Windows build synchronizes the launcher's embedded C# from `src/` and checks the helper hash before compiling.
+```powershell
+python build_native.py                             # native helper, needs clang and lld-link
+powershell -ExecutionPolicy Bypass -File build.ps1 # executable, self-test and release zip
+```
 
-## Scope
+The build checks the helper against the hash in the source before it compiles, and the app checks it again before it loads it.
 
-This is beta software. The supported target is the stock modern Windows 11 taskbar on x64 systems. It does not change global Windows accent colors, application themes, or Start. It restores its saved local taskbar values when stopped and monitors the controller process so Explorer can restore them after a crash.
+## License
+
+[GPL-3.0-or-later](LICENSE.txt)
+
+PS: This is beta software that reaches into private parts of the Windows taskbar, so a Windows update can break it. If that happens, please [open an issue](../../issues).
