@@ -2,15 +2,15 @@
 
 The Windows 11 taskbar has one color, and it doesn't care what is above it. Maximize a dark editor and you get a light bar under it, or the other way round, and the screen ends in a strip that looks like it belongs to another app.
 
-Taskbar Match makes the taskbar continue the window above it. It reads a thin strip at the edge of the maximized window, gives the taskbar that color and flips the text and icons to dark or light so they stay readable. When no window touches the taskbar, it hands the bar back to Windows. It works on every monitor and needs no administrator rights.
+Taskbar Match makes the taskbar continue the window next to it. It reads a thin strip at the edge of the maximized window, gives the taskbar that color and flips the text and icons to dark or light so they stay readable. When no window touches the taskbar, it hands the bar back to Windows. It works on every monitor and needs no administrator rights.
 
 <img src="assets/how.png" alt="Taskbar Match samples a strip at the bottom of the maximized window and gives the taskbar that color" width="100%">
 
 ## How it works
 
-Whenever windows change, and every few moments in between, Taskbar Match looks for the maximized window that borders each taskbar and reads a strip a few pixels tall along its edge, never a screenshot of the screen. It takes the dominant color of that strip, sets it as the taskbar background through a small native helper and picks dark or light icons by contrast. It keeps the original taskbar values and puts them back when you pause or exit. If it crashes, Explorer restores them on its own.
+Whenever windows change, and every few moments in between, Taskbar Match looks for the maximized window that borders each taskbar and reads a strip a few pixels thick along the edge that touches the taskbar, never a screenshot of the screen. It takes the dominant color of that strip, sets it as the taskbar background through a small native helper and picks dark or light icons by contrast. It keeps the original taskbar values and puts them back when you pause or exit. If it crashes, Explorer restores them on its own.
 
-Full-screen games and videos are left alone, and so is a hidden taskbar. Since 1.2.0 the taskbar can sit at the bottom or the top of the screen. Taskbars on the left or right edge are not supported yet; Taskbar Match leaves them unchanged.
+Full-screen games and videos are left alone, and so is a hidden taskbar. Since 1.2.0 the taskbar can sit on any edge of the screen: bottom, top, left or right.
 
 ## Install
 

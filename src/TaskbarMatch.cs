@@ -166,6 +166,7 @@ namespace TaskbarMatch
         private const int WM_POWERBROADCAST = 0x0218;
         private static readonly Guid DisplayStateGuid = new Guid("6fe69556-704a-47a0-8f24-c28d936fda47");
 
+        private static readonly uint[] AppBarEdges = { 3u, 1u, 0u, 2u };
         private readonly Stopwatch clock = Stopwatch.StartNew();
         private readonly MessageSink sink;
         private readonly NotifyIcon tray;
@@ -561,13 +562,13 @@ namespace TaskbarMatch
                 DisplayInfo display = null;
                 // Auto-hidden taskbar rectangles can lie just over a neighboring
                 // monitor's boundary. Ask the appbar service before using nearest:
-                // ABE_BOTTOM on every display first, then ABE_TOP.
-                for (int i = 0; display == null && i < 2 * displays.Count; i++)
+                // ABE_BOTTOM on every display first, then ABE_TOP, ABE_LEFT, ABE_RIGHT.
+                for (int i = 0; display == null && i < AppBarEdges.Length * displays.Count; i++)
                 {
                     DisplayInfo d = displays[i % displays.Count];
                     Native.APPBARDATA data = new Native.APPBARDATA();
                     data.cbSize = (uint)Marshal.SizeOf(typeof(Native.APPBARDATA));
-                    data.uEdge = i < displays.Count ? 3u : 1u;
+                    data.uEdge = AppBarEdges[i / displays.Count];
                     data.rc = d.Bounds;
                     if (Native.SHAppBarMessage(0x0000000B, ref data) == handle) { display = d; }
                 }
@@ -637,29 +638,31 @@ namespace TaskbarMatch
                 return;
             }
             Native.RECT m = state.Display.Bounds;
-            int visibleHeight = Math.Min(bar.Bottom, m.Bottom) - Math.Max(bar.Top, m.Top);
-            if (!Native.IsWindowVisible(state.Handle) || visibleHeight < Math.Max(8, (int)(state.Dpi / 12)))
+            int edge = Core.TaskbarEdge(bar, m);
+            bool horizontal = edge != 0 && edge != 2;
+            // How much of the bar is on screen across its thickness.
+            int visible = horizontal ? Math.Min(bar.Bottom, m.Bottom) - Math.Max(bar.Top, m.Top)
+                : Math.Min(bar.Right, m.Right) - Math.Max(bar.Left, m.Left);
+            if (!Native.IsWindowVisible(state.Handle) || visible < Math.Max(8, (int)(state.Dpi / 12)))
             {
                 state.Status = "Taskbar hidden; left hidden";
                 return;
             }
-            // This build is intentionally for the stock horizontal Windows 11
-            // taskbar, not an ExplorerPatcher/StartAllBack replacement.
-            int edge = Core.TaskbarEdge(bar, m);
-            if (edge != 1 && edge != 3)
+            // This build is intentionally for the stock Windows 11 taskbar at
+            // any screen edge, not an ExplorerPatcher/StartAllBack replacement.
+            if (edge < 0)
             {
-                state.Status = edge < 0 ? "Non-stock taskbar geometry; unchanged" : "Vertical taskbar not supported yet; unchanged";
+                state.Status = "Non-stock taskbar geometry; unchanged";
                 RestoreOne(state);
                 return;
             }
-            bool top = edge == 1;
             int inset = Math.Max(3, (int)Math.Round(4.0 * state.Dpi / 96.0));
             WindowInfo candidate = null;
             int candidateIndex = -1;
             for (int index = 0; index < windows.Count; index++)
             {
                 WindowInfo w = windows[index];
-                if (!w.CanBeSource || !Core.IsBorderingSource(w.Bounds, w.Maximized, m, top ? bar.Bottom : bar.Top, top, inset + 3)) { continue; }
+                if (!w.CanBeSource || !Core.IsBorderingSource(w.Bounds, w.Maximized, m, Core.FacingEdge(bar, edge), edge, inset + 3)) { continue; }
                 candidate = w;
                 candidateIndex = index;
                 break;
@@ -684,8 +687,9 @@ namespace TaskbarMatch
             // taskbar, do not keep capturing a game/video or force the bar on top.
             if (Core.CoversMonitor(candidate.Bounds, m, inset + 3))
             {
-                Native.POINT p = new Native.POINT(m.Left + m.Width / 2,
-                    Math.Min(m.Bottom - 2, Math.Max(bar.Top, m.Top) + visibleHeight / 2));
+                Native.POINT p = horizontal
+                    ? new Native.POINT(m.Left + m.Width / 2, Math.Min(m.Bottom - 2, Math.Max(bar.Top, m.Top) + visible / 2))
+                    : new Native.POINT(Math.Min(m.Right - 2, Math.Max(bar.Left, m.Left) + visible / 2), m.Top + m.Height / 2);
                 IntPtr hit = Native.WindowFromPoint(p);
                 if (hit != IntPtr.Zero && Native.GetAncestor(hit, 2) == candidate.Handle)
                 {
@@ -695,7 +699,7 @@ namespace TaskbarMatch
             }
 
             Native.RECT strip;
-            if (!Core.TryStrip(m, bar, candidate.Bounds, top, inset, out strip))
+            if (!Core.TryStrip(m, bar, candidate.Bounds, edge, inset, out strip))
             {
                 state.Status = "No usable window edge";
                 return;
@@ -704,12 +708,14 @@ namespace TaskbarMatch
             int validCount = 0;
             for (int column = 0; column < StripSampler.Columns; column++)
             {
-                int x = Core.SampleX(strip.Left, strip.Width, column, StripSampler.Columns);
+                int along = horizontal ? Core.SampleX(strip.Left, strip.Width, column, StripSampler.Columns)
+                    : Core.SampleX(strip.Top, strip.Height, column, StripSampler.Columns);
                 bool uncovered = true;
                 for (int higher = 0; higher < candidateIndex; higher++)
                 {
                     Native.RECT r = windows[higher].Bounds;
-                    if (x >= r.Left && x < r.Right && r.Top < strip.Bottom && r.Bottom > strip.Top)
+                    if (horizontal ? along >= r.Left && along < r.Right && r.Top < strip.Bottom && r.Bottom > strip.Top
+                        : along >= r.Top && along < r.Bottom && r.Left < strip.Right && r.Right > strip.Left)
                     {
                         uncovered = false;
                         break;
@@ -960,26 +966,59 @@ namespace TaskbarMatch
             return -1;
         }
 
-        // barEdge is the taskbar side facing the windows: its top for a
-        // bottom taskbar, its bottom for a top taskbar.
-        internal static bool IsBorderingSource(Native.RECT window, bool maximized,
-            Native.RECT monitor, int barEdge, bool top, int tolerance)
+        // The taskbar side that faces the windows.
+        internal static int FacingEdge(Native.RECT bar, int edge)
         {
-            if (!maximized && !CoversMonitor(window, monitor, tolerance)) { return false; }
-            return window.Left <= monitor.Left + tolerance && window.Right >= monitor.Right - tolerance &&
-                (top ? window.Top <= barEdge + tolerance && window.Bottom > barEdge + 12
-                    : window.Bottom >= barEdge - tolerance && window.Top < barEdge - 12) &&
-                window.Bottom > monitor.Top && window.Top < monitor.Bottom;
+            switch (edge)
+            {
+                case 0: return bar.Right;
+                case 1: return bar.Bottom;
+                case 2: return bar.Left;
+                default: return bar.Top;
+            }
         }
 
-        // The sampled strip lies inside the source window, inset pixels
-        // from the taskbar: above a bottom taskbar, below a top taskbar.
-        internal static bool TryStrip(Native.RECT monitor, Native.RECT bar, Native.RECT window,
-            bool top, int inset, out Native.RECT strip)
+        // A maximized window spans the monitor along the taskbar and touches
+        // the bar's facing edge (see FacingEdge).
+        internal static bool IsBorderingSource(Native.RECT window, bool maximized,
+            Native.RECT monitor, int barEdge, int edge, int tolerance)
         {
+            if (!maximized && !CoversMonitor(window, monitor, tolerance)) { return false; }
+            if (window.Bottom <= monitor.Top || window.Top >= monitor.Bottom ||
+                window.Right <= monitor.Left || window.Left >= monitor.Right) { return false; }
+            switch (edge)
+            {
+                case 0:
+                case 2:
+                    return window.Top <= monitor.Top + tolerance && window.Bottom >= monitor.Bottom - tolerance &&
+                        (edge == 0 ? window.Left <= barEdge + tolerance && window.Right > barEdge + 12
+                            : window.Right >= barEdge - tolerance && window.Left < barEdge - 12);
+                default:
+                    return window.Left <= monitor.Left + tolerance && window.Right >= monitor.Right - tolerance &&
+                        (edge == 1 ? window.Top <= barEdge + tolerance && window.Bottom > barEdge + 12
+                            : window.Bottom >= barEdge - tolerance && window.Top < barEdge - 12);
+            }
+        }
+
+        // The sampled strip lies inside the source window, inset pixels from
+        // the taskbar and StripSampler.Height thick: a row next to a top or
+        // bottom taskbar, a column next to a left or right one.
+        internal static bool TryStrip(Native.RECT monitor, Native.RECT bar, Native.RECT window,
+            int edge, int inset, out Native.RECT strip)
+        {
+            if (edge == 0 || edge == 2)
+            {
+                int top = Math.Max(monitor.Top, window.Top) + inset;
+                int bottom = Math.Min(monitor.Bottom, window.Bottom) - inset;
+                int x = edge == 0 ? Math.Max(bar.Right, window.Left) + inset
+                    : Math.Min(bar.Left, window.Right) - inset - StripSampler.Height;
+                strip = new Native.RECT(x, top, x + StripSampler.Height, bottom);
+                return bottom - top >= StripSampler.Columns && x >= Math.Max(monitor.Left, window.Left) &&
+                    strip.Right <= Math.Min(monitor.Right, window.Right);
+            }
             int left = Math.Max(monitor.Left, window.Left) + inset;
             int right = Math.Min(monitor.Right, window.Right) - inset;
-            int y = top ? Math.Max(bar.Bottom, window.Top) + inset
+            int y = edge == 1 ? Math.Max(bar.Bottom, window.Top) + inset
                 : Math.Min(bar.Top, window.Bottom) - inset - StripSampler.Height;
             strip = new Native.RECT(left, y, right, y + StripSampler.Height);
             return right - left >= StripSampler.Columns && y >= Math.Max(monitor.Top, window.Top) &&
@@ -995,8 +1034,8 @@ namespace TaskbarMatch
             Native.RECT leftMonitor = new Native.RECT(-1920, -200, 0, 880);
             Native.RECT max = new Native.RECT(-1920, -200, 0, 832);
             Native.RECT floating = new Native.RECT(-1600, 0, -200, 700);
-            if (!IsBorderingSource(max, true, leftMonitor, 832, false, 7) ||
-                IsBorderingSource(floating, false, leftMonitor, 832, false, 7) ||
+            if (!IsBorderingSource(max, true, leftMonitor, 832, 3, 7) ||
+                IsBorderingSource(floating, false, leftMonitor, 832, 3, 7) ||
                 CoversMonitor(max, leftMonitor, 7) || !CoversMonitor(leftMonitor, leftMonitor, 7))
                 throw new InvalidOperationException("Internal monitor-geometry test failed.");
             // A monitor above the primary, with the taskbar at its top edge.
@@ -1008,15 +1047,30 @@ namespace TaskbarMatch
                 TaskbarEdge(new Native.RECT(0, -1080, 48, 0), upperMonitor) != 0 ||
                 TaskbarEdge(new Native.RECT(1872, -1080, 1920, 0), upperMonitor) != 2 ||
                 TaskbarEdge(new Native.RECT(600, -1080, 1300, -1032), upperMonitor) != -1 ||
-                !IsBorderingSource(belowBar, true, upperMonitor, -1032, true, 7) ||
-                IsBorderingSource(belowBar, true, upperMonitor, -1032, false, 7) ||
-                IsBorderingSource(new Native.RECT(200, -900, 1500, -200), false, upperMonitor, -1032, true, 7))
+                !IsBorderingSource(belowBar, true, upperMonitor, -1032, 1, 7) ||
+                IsBorderingSource(belowBar, true, upperMonitor, -1032, 3, 7) ||
+                IsBorderingSource(new Native.RECT(200, -900, 1500, -200), false, upperMonitor, -1032, 1, 7))
                 throw new InvalidOperationException("Internal top-taskbar geometry test failed.");
-            if (!TryStrip(upperMonitor, topBar, belowBar, true, 4, out strip) ||
+            // The same monitor with the taskbar on its left, then its right edge.
+            Native.RECT leftBar = new Native.RECT(0, -1080, 48, 0);
+            Native.RECT rightOfBar = new Native.RECT(48, -1080, 1920, 0);
+            Native.RECT rightBar = new Native.RECT(1872, -1080, 1920, 0);
+            Native.RECT leftOfBar = new Native.RECT(0, -1080, 1872, 0);
+            if (FacingEdge(leftBar, 0) != 48 || FacingEdge(rightBar, 2) != 1872 || FacingEdge(topBar, 1) != -1032 ||
+                !IsBorderingSource(rightOfBar, true, upperMonitor, 48, 0, 7) ||
+                IsBorderingSource(rightOfBar, true, upperMonitor, 48, 2, 7) ||
+                !IsBorderingSource(leftOfBar, true, upperMonitor, 1872, 2, 7) ||
+                IsBorderingSource(new Native.RECT(48, -1080, 1920, -500), true, upperMonitor, 48, 0, 7))
+                throw new InvalidOperationException("Internal vertical-taskbar geometry test failed.");
+            if (!TryStrip(upperMonitor, topBar, belowBar, 1, 4, out strip) ||
                 strip.Left != 4 || strip.Top != -1028 || strip.Right != 1916 || strip.Bottom != -1025 ||
-                !TryStrip(leftMonitor, new Native.RECT(-1920, 832, 0, 880), max, false, 4, out strip) ||
+                !TryStrip(leftMonitor, new Native.RECT(-1920, 832, 0, 880), max, 3, 4, out strip) ||
                 strip.Left != -1916 || strip.Top != 825 || strip.Right != -4 || strip.Bottom != 828 ||
-                TryStrip(upperMonitor, topBar, new Native.RECT(0, -1032, 1920, -1027), true, 4, out strip))
+                TryStrip(upperMonitor, topBar, new Native.RECT(0, -1032, 1920, -1027), 1, 4, out strip) ||
+                !TryStrip(upperMonitor, leftBar, rightOfBar, 0, 4, out strip) ||
+                strip.Left != 52 || strip.Top != -1076 || strip.Right != 55 || strip.Bottom != -4 ||
+                !TryStrip(upperMonitor, rightBar, leftOfBar, 2, 4, out strip) ||
+                strip.Left != 1865 || strip.Top != -1076 || strip.Right != 1868 || strip.Bottom != -4)
                 throw new InvalidOperationException("Internal sample-strip test failed.");
             if (SampleX(-1920, 1920, 0, 96) != -1910 || SampleX(-1920, 1920, 95, 96) != -10)
                 throw new InvalidOperationException("Internal negative-coordinate test failed.");
@@ -1033,28 +1087,33 @@ namespace TaskbarMatch
         private IntPtr oldBitmap;
         private IntPtr bits;
         private int allocatedWidth;
+        private int allocatedHeight;
         private byte[] pixels;
         private readonly int[] counts = new int[4096];
         private readonly uint[] sampled = new uint[Columns * Height];
         private readonly Dictionary<uint, int> exactCounts = new Dictionary<uint, int>(Columns * Height);
         private bool disposed;
 
+        // strip is Height pixels thick: a row for a horizontal taskbar, a
+        // column for a vertical one. Columns samples are taken along it.
         internal bool TrySample(Native.RECT strip, bool[] valid, uint? previous, out uint color)
         {
             color = 0;
-            if (disposed || strip.Width < Columns || strip.Width > 32768 || strip.Height != Height) { return false; }
+            bool vertical = strip.Height > strip.Width;
+            int length = vertical ? strip.Height : strip.Width;
+            if (disposed || length < Columns || length > 32768 || (vertical ? strip.Width : strip.Height) != Height) { return false; }
             IntPtr desktopDc = Native.GetDC(IntPtr.Zero);
             if (desktopDc == IntPtr.Zero) { return false; }
             try
             {
-                EnsureBuffer(desktopDc, strip.Width);
+                EnsureBuffer(desktopDc, strip.Width, strip.Height);
                 // A single narrow BitBlt, not one GetPixel GPU readback for each
                 // sample and not a full-screen screenshot. CAPTUREBLT includes
                 // composited/layered content; the cursor is not explicitly drawn.
-                if (!Native.BitBlt(memoryDc, 0, 0, strip.Width, Height, desktopDc,
+                if (!Native.BitBlt(memoryDc, 0, 0, strip.Width, strip.Height, desktopDc,
                     strip.Left, strip.Top, 0x40CC0020u)) { return false; }
                 Native.GdiFlush();
-                Marshal.Copy(bits, pixels, 0, strip.Width * Height * 4);
+                Marshal.Copy(bits, pixels, 0, strip.Width * strip.Height * 4);
                 Captures++;
             }
             finally { Native.ReleaseDC(IntPtr.Zero, desktopDc); }
@@ -1064,10 +1123,10 @@ namespace TaskbarMatch
             for (int column = 0; column < Columns; column++)
             {
                 if (!valid[column]) { continue; }
-                int localX = Core.SampleX(0, strip.Width, column, Columns);
-                for (int row = 0; row < Height; row++)
+                int along = Core.SampleX(0, length, column, Columns);
+                for (int across = 0; across < Height; across++)
                 {
-                    int offset = (row * allocatedWidth + localX) * 4;
+                    int offset = vertical ? (along * allocatedWidth + across) * 4 : (across * allocatedWidth + along) * 4;
                     uint value = Core.Abgr(pixels[offset + 2], pixels[offset + 1], pixels[offset]);
                     sampled[used++] = value;
                     counts[Core.ColorBin(value)]++;
@@ -1107,20 +1166,20 @@ namespace TaskbarMatch
             return bestFrequency != 0;
         }
 
-        private void EnsureBuffer(IntPtr desktopDc, int width)
+        private void EnsureBuffer(IntPtr desktopDc, int width, int height)
         {
-            if (memoryDc != IntPtr.Zero && allocatedWidth == width) { return; }
+            if (memoryDc != IntPtr.Zero && allocatedWidth == width && allocatedHeight == height) { return; }
             FreeBuffer();
             memoryDc = Native.CreateCompatibleDC(desktopDc);
             if (memoryDc == IntPtr.Zero) { throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not create the edge-sampling buffer."); }
             Native.BITMAPINFO info = new Native.BITMAPINFO();
             info.bmiHeader.biSize = (uint)Marshal.SizeOf(typeof(Native.BITMAPINFOHEADER));
             info.bmiHeader.biWidth = width;
-            info.bmiHeader.biHeight = -Height;
+            info.bmiHeader.biHeight = -height;
             info.bmiHeader.biPlanes = 1;
             info.bmiHeader.biBitCount = 32;
             info.bmiHeader.biCompression = 0;
-            info.bmiHeader.biSizeImage = (uint)(width * Height * 4);
+            info.bmiHeader.biSizeImage = (uint)(width * height * 4);
             bitmap = Native.CreateDIBSection(desktopDc, ref info, 0, out bits, IntPtr.Zero, 0);
             if (bitmap == IntPtr.Zero || bits == IntPtr.Zero)
             {
@@ -1135,7 +1194,8 @@ namespace TaskbarMatch
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not activate the edge-sampling bitmap.");
             }
             allocatedWidth = width;
-            pixels = new byte[width * Height * 4];
+            allocatedHeight = height;
+            pixels = new byte[width * height * 4];
         }
 
         private void FreeBuffer()
@@ -1144,7 +1204,7 @@ namespace TaskbarMatch
             if (bitmap != IntPtr.Zero) { Native.DeleteObject(bitmap); }
             if (memoryDc != IntPtr.Zero) { Native.DeleteDC(memoryDc); }
             bitmap = IntPtr.Zero; memoryDc = IntPtr.Zero; oldBitmap = IntPtr.Zero;
-            bits = IntPtr.Zero; allocatedWidth = 0; pixels = null;
+            bits = IntPtr.Zero; allocatedWidth = 0; allocatedHeight = 0; pixels = null;
         }
 
         public void Dispose()
